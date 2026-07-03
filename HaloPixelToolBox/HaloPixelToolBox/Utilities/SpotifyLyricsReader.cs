@@ -1,11 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.Media.Control;
+using XFEExtension.NetCore.WinUIHelper.Utilities.Helper;
 
 namespace HaloPixelToolBox.Utilities;
 
@@ -17,7 +22,8 @@ public class LyricLine
 
 public static class LrcParser
 {
-    private static readonly Regex LrcTimeRegex = new Regex(@"\[(\d+):(\d+)(?:\.(\d+))?\]", RegexOptions.Compiled);
+    private static readonly Regex LrcTimeRegex = new Regex(@"\[(\d+):(\d+)(?:[:\.](\d+))?\]", RegexOptions.Compiled);
+    private static readonly Regex CleanTimecodeRegex = new Regex(@"\[\d+:\d+(?:[:\.]\d+)?\]", RegexOptions.Compiled);
 
     public static List<LyricLine> Parse(string lrcContent)
     {
@@ -47,7 +53,14 @@ public static class LrcParser
 
                 var timestamp = new TimeSpan(0, 0, minutes, seconds, milliseconds);
                 var text = line.Substring(match.Length).Trim();
-                lines.Add(new LyricLine { Timestamp = timestamp, Text = text });
+                
+                // Strip any remaining timecodes from the lyric text (e.g. "[00:00.00]" or "[00:00:000]")
+                text = CleanTimecodeRegex.Replace(text, "").Trim();
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    lines.Add(new LyricLine { Timestamp = timestamp, Text = text });
+                }
             }
         }
         lines.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
@@ -62,51 +75,188 @@ public class LrclibResponse
 
     [JsonPropertyName("syncedLyrics")]
     public string? SyncedLyrics { get; set; }
+
+    [JsonPropertyName("trackName")]
+    public string? TrackName { get; set; }
+
+    [JsonPropertyName("artistName")]
+    public string? ArtistName { get; set; }
 }
 
 public class SpotifyLyricsReader
 {
-    private static readonly HttpClient HttpClient = new HttpClient();
+    private static readonly string LogPath = @"C:\Users\WePro\.gemini\antigravity-cli\spotify_debug.log";
+    private static HttpClient? _httpClient;
+    private static readonly object HttpLock = new object();
+
+    private static HttpClient HttpClient
+    {
+        get
+        {
+            if (_httpClient == null)
+            {
+                lock (HttpLock)
+                {
+                    if (_httpClient == null)
+                    {
+                        _httpClient = CreateHttpClient();
+                    }
+                }
+            }
+            return _httpClient;
+        }
+    }
 
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
     private GlobalSystemMediaTransportControlsSession? _currentSession;
+    private bool _isInitialized = false;
+    private CancellationTokenSource? _cts;
 
     private string _currentTitle = string.Empty;
     private string _currentArtist = string.Empty;
-    private string _currentAlbum = string.Empty;
     private double _currentDuration = 0;
     private List<LyricLine> _lyricLines = new();
+
+    private DateTimeOffset _songStartTime = DateTimeOffset.Now;
+    private bool _isSmtcSynced = false;
 
     public string CurrentTitle => _currentTitle;
     public string CurrentArtist => _currentArtist;
 
     static SpotifyLyricsReader()
     {
-        HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("HaloPixelToolBox/1.2.7 (https://github.com/WePro/HaloPixelToolBox)");
+        try
+        {
+            if (File.Exists(LogPath)) File.Delete(LogPath);
+            File.WriteAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] Log initialized.\n");
+        }
+        catch { }
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        var handler = new HttpClientHandler
+        {
+            // Ignore certificate errors to bypass any MITM issues caused by local proxy clients decrypting HTTPS
+            ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+        };
+        
+        // List of common local proxy ports in China:
+        // 7890: Clash / Mihomo
+        // 10809: v2rayN / Xray
+        // 10808: Shadowsocks / SSR
+        // 7898: Clash alternative
+        int[] commonPorts = { 7890, 10809, 10808, 7898 };
+        bool proxyConfigured = false;
+
+        foreach (var port in commonPorts)
+        {
+            if (IsPortOpen(port))
+            {
+                handler.Proxy = new System.Net.WebProxy($"http://127.0.0.1:{port}");
+                handler.UseProxy = true;
+                proxyConfigured = true;
+                break;
+            }
+        }
+
+        var client = new HttpClient(handler);
+        client.DefaultRequestHeaders.UserAgent.Clear();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        
+        if (proxyConfigured)
+        {
+            LogDebug("Auto-configured HttpClient to use local proxy for accelerated connection.");
+        }
+        else
+        {
+            LogDebug("No local proxy detected, using direct system default connection.");
+        }
+
+        return client;
+    }
+
+    private static bool IsPortOpen(int port)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var connectTask = client.ConnectAsync(IPAddress.Loopback, port);
+            if (connectTask.Wait(250)) // Wait up to 250ms to ensure JIT doesn't miss the handshake
+            {
+                return client.Connected;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static void LogDebug(string message)
+    {
+        try
+        {
+            File.AppendAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}\n");
+        }
+        catch { }
+    }
+
+    private static async Task<T?> RunWithTimeout<T>(Windows.Foundation.IAsyncOperation<T> asyncOp, int timeoutMs)
+    {
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var task = asyncOp.AsTask(cts.Token);
+            var delayTask = Task.Delay(timeoutMs);
+            var completedTask = await Task.WhenAny(task, delayTask);
+            if (completedTask == task)
+            {
+                return await task;
+            }
+            else
+            {
+                cts.Cancel(); // Cancel the WinRT operation
+                LogDebug("WinRT async operation timed out.");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogDebug($"RunWithTimeout failed: {ex.Message}");
+        }
+        return default;
     }
 
     public bool Initialize()
     {
+        LogDebug($"Initialize called. isInitialized={_isInitialized}");
+        if (_isInitialized)
+        {
+            UpdateCurrentSession();
+            return _currentSession != null || Process.GetProcessesByName("Spotify").Length > 0;
+        }
+
         try
         {
             var task = Task.Run(async () =>
             {
                 _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
                 _manager.SessionsChanged += OnSessionsChanged;
+                _isInitialized = true;
                 UpdateCurrentSession();
-                return _currentSession != null;
+                StartWindowTitlePolling();
+                return _currentSession != null || Process.GetProcessesByName("Spotify").Length > 0;
             });
             return task.Result;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] SpotifyLyricsReader Initialize failed: {ex.Message}");
+            LogDebug($"SpotifyLyricsReader Initialize failed: {ex.Message}");
             return false;
         }
     }
 
     private void OnSessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args)
     {
+        LogDebug("OnSessionsChanged event fired.");
         UpdateCurrentSession();
     }
 
@@ -127,6 +277,7 @@ public class SpotifyLyricsReader
 
         if (spotifySession != _currentSession)
         {
+            LogDebug($"Active session changed. Old: {_currentSession?.SourceAppUserModelId ?? "null"}, New: {spotifySession?.SourceAppUserModelId ?? "null"}");
             if (_currentSession != null)
             {
                 _currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
@@ -141,128 +292,505 @@ public class SpotifyLyricsReader
                 _currentSession.MediaPropertiesChanged += OnMediaPropertiesChanged;
                 _currentSession.PlaybackInfoChanged += OnPlaybackInfoChanged;
                 _currentSession.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
-                _ = UpdateTrackAsync(_currentSession);
-            }
-            else
-            {
-                _currentTitle = string.Empty;
-                _currentArtist = string.Empty;
-                _currentAlbum = string.Empty;
-                _currentDuration = 0;
-                _lyricLines.Clear();
+                _ = SyncWithSmtcAsync();
             }
         }
     }
 
-    private async void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
+    private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
     {
-        await UpdateTrackAsync(sender);
+        LogDebug("OnMediaPropertiesChanged event fired.");
+        _ = SyncWithSmtcAsync();
     }
 
     private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
     {
-        // Playback status might have changed, could trigger UI updates
+        LogDebug("OnPlaybackInfoChanged event fired.");
+        _ = SyncWithSmtcAsync();
     }
 
     private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
     {
-        // Timeline properties updated
+        LogDebug("OnTimelinePropertiesChanged event fired.");
+        _ = SyncWithSmtcAsync();
     }
 
-    private async Task UpdateTrackAsync(GlobalSystemMediaTransportControlsSession session)
+    private async Task SyncWithSmtcAsync()
     {
+        if (_currentSession == null) return;
+
         try
         {
-            var media = await session.TryGetMediaPropertiesAsync();
-            if (media == null) return;
-
-            var timeline = session.GetTimelineProperties();
-            double duration = timeline?.EndTime.TotalSeconds ?? 0;
-
-            if (_currentTitle == media.Title && _currentArtist == media.Artist)
+            var media = await RunWithTimeout(_currentSession.TryGetMediaPropertiesAsync(), 500);
+            if (media != null && !string.IsNullOrEmpty(media.Title))
             {
-                return; // Same track
-            }
-
-            _currentTitle = media.Title;
-            _currentArtist = media.Artist;
-            _currentAlbum = media.AlbumTitle;
-            _currentDuration = duration;
-            _lyricLines.Clear();
-
-            Console.WriteLine($"[SpotifyLyricsReader] Track changed: {_currentArtist} - {_currentTitle} ({_currentAlbum}, {duration}s)");
-
-            var lyricsRes = await FetchLyricsAsync(_currentTitle, _currentArtist, _currentAlbum, _currentDuration);
-            if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.SyncedLyrics))
-            {
-                _lyricLines = LrcParser.Parse(lyricsRes.SyncedLyrics);
-                Console.WriteLine($"[SpotifyLyricsReader] Loaded {_lyricLines.Count} synced lines.");
-            }
-            else if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.PlainLyrics))
-            {
-                Console.WriteLine("[SpotifyLyricsReader] No synced lyrics, plain lyrics available.");
-            }
-            else
-            {
-                Console.WriteLine("[SpotifyLyricsReader] No lyrics found.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ERROR] UpdateTrackAsync failed: {ex.Message}");
-        }
-    }
-
-    private async Task<LrclibResponse?> FetchLyricsAsync(string title, string artist, string album, double duration)
-    {
-        try
-        {
-            string url = $"https://lrclib.net/api/get?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
-            if (!string.IsNullOrEmpty(album))
-                url += $"&album_name={Uri.EscapeDataString(album)}";
-            if (duration > 0)
-                url += $"&duration={(int)duration}";
-
-            var response = await HttpClient.GetAsync(url);
-            if (response.IsSuccessStatusCode)
-            {
-                return await response.Content.ReadFromJsonAsync<LrclibResponse>();
-            }
-
-            // Fallback: search without album/duration if direct match fails
-            if (!string.IsNullOrEmpty(album) || duration > 0)
-            {
-                string fallbackUrl = $"https://lrclib.net/api/get?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
-                var fallbackRes = await HttpClient.GetAsync(fallbackUrl);
-                if (fallbackRes.IsSuccessStatusCode)
+                // Check if SMTC matches our window-title song
+                if (media.Title.Contains(_currentTitle, StringComparison.OrdinalIgnoreCase) ||
+                    _currentTitle.Contains(media.Title, StringComparison.OrdinalIgnoreCase))
                 {
-                    return await fallbackRes.Content.ReadFromJsonAsync<LrclibResponse>();
+                    var timeline = _currentSession.GetTimelineProperties();
+                    _currentDuration = timeline?.EndTime.TotalSeconds ?? 0;
+                    _isSmtcSynced = true;
+                    LogDebug($"SMTC Sync Achieved for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+                }
+                else
+                {
+                    LogDebug($"SMTC song mismatch. SMTC Title: {media.Title}, Current Title: {_currentTitle}");
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] FetchLyricsAsync failed: {ex.Message}");
+            LogDebug($"SyncWithSmtcAsync failed: {ex.Message}");
         }
+    }
+
+    private void StartWindowTitlePolling()
+    {
+        LogDebug("Starting window title polling loop.");
+        Task.Run(async () =>
+        {
+            while (true)
+            {
+                try
+                {
+                    var trackInfo = await GetTrackInfoAsync();
+
+                    if (!string.IsNullOrEmpty(trackInfo.Title))
+                    {
+                        if (trackInfo.Artist != _currentArtist || trackInfo.Title != _currentTitle)
+                        {
+                            LogDebug($"Track change detected via polling: {trackInfo.Artist} - {trackInfo.Title}");
+                            _ = HandleTrackChangeAsync(trackInfo.Artist, trackInfo.Title);
+                        }
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrEmpty(_currentTitle))
+                        {
+                            LogDebug("No active track detected, clearing lyrics.");
+                            _currentTitle = string.Empty;
+                            _currentArtist = string.Empty;
+                            _lyricLines.Clear();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"Track polling loop error: {ex.Message}");
+                }
+                await Task.Delay(250);
+            }
+        });
+    }
+
+    private static string GetSpotifyWindowTitle()
+    {
+        var processes = Process.GetProcessesByName("Spotify");
+        foreach (var p in processes)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(p.MainWindowTitle))
+                {
+                    return p.MainWindowTitle;
+                }
+            }
+            catch { /* Ignore process access errors */ }
+        }
+        return string.Empty;
+    }
+
+    private async Task<(string Artist, string Title)> GetTrackInfoAsync()
+    {
+        string artist = string.Empty;
+        string title = string.Empty;
+
+        // 1. Try Window Title for instant song metadata
+        string winTitle = GetSpotifyWindowTitle();
+        if (!string.IsNullOrEmpty(winTitle) && winTitle != "Spotify" && winTitle != "Spotify Premium" && winTitle != "Spotify Free")
+        {
+            int dashIndex = winTitle.IndexOf(" - ");
+            if (dashIndex > 0)
+            {
+                artist = winTitle.Substring(0, dashIndex).Trim();
+                title = winTitle.Substring(dashIndex + 3).Trim();
+            }
+        }
+
+        // 2. Fallback to SMTC metadata if window title is empty (e.g. minimized to tray)
+        if (string.IsNullOrEmpty(title) && _currentSession != null)
+        {
+            try
+            {
+                var media = await RunWithTimeout(_currentSession.TryGetMediaPropertiesAsync(), 500);
+                if (media != null && !string.IsNullOrEmpty(media.Title))
+                {
+                    artist = media.Artist;
+                    title = media.Title;
+                }
+            }
+            catch { }
+        }
+
+        return (artist, title);
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var cleanName = string.Join("_", name.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return cleanName;
+    }
+
+    private async Task HandleTrackChangeAsync(string artist, string track)
+    {
+        LogDebug($"HandleTrackChangeAsync started. Target: {artist} - {track}");
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
+
+        try
+        {
+            _currentTitle = track;
+            _currentArtist = artist;
+            _songStartTime = DateTimeOffset.Now;
+            _currentDuration = 0;
+            _isSmtcSynced = false;
+            _lyricLines.Clear();
+
+            // Await SMTC synchronization to get the duration before requesting lyrics
+            await SyncWithSmtcAsync();
+
+            LogDebug($"Fetching lyrics for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+
+            // 1. Check local cache first
+            string lyricsCacheDir = Path.Combine(AppPathHelper.AppCache, "Lyrics");
+            if (!Directory.Exists(lyricsCacheDir))
+            {
+                Directory.CreateDirectory(lyricsCacheDir);
+            }
+            string cacheFilePath = Path.Combine(lyricsCacheDir, $"{SanitizeFileName(_currentArtist)} - {SanitizeFileName(_currentTitle)}.lrc");
+
+            if (File.Exists(cacheFilePath))
+            {
+                try
+                {
+                    string cachedLrc = await File.ReadAllTextAsync(cacheFilePath, token);
+                    if (!string.IsNullOrEmpty(cachedLrc))
+                    {
+                        _lyricLines = LrcParser.Parse(cachedLrc);
+                        LogDebug($"Loaded lyrics from local cache file: '{cacheFilePath}'");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"Failed to read cached lyrics file: {ex.Message}");
+                }
+            }
+
+            // 2. Local cache miss: query LRCLIB database (with local proxy acceleration enabled)
+            var lyricsRes = await FetchLyricsAsync(_currentTitle, _currentArtist, _currentDuration, token);
+
+            if (token.IsCancellationRequested)
+            {
+                LogDebug($"Lyrics fetch cancelled for: {artist} - {track}");
+                return;
+            }
+
+            if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.SyncedLyrics))
+            {
+                _lyricLines = LrcParser.Parse(lyricsRes.SyncedLyrics);
+                LogDebug($"Loaded {_lyricLines.Count} synced lines from LRCLIB.");
+
+                // Save to local cache asynchronously
+                try
+                {
+                    await File.WriteAllTextAsync(cacheFilePath, lyricsRes.SyncedLyrics, token);
+                    LogDebug($"Saved fetched lyrics to local cache: '{cacheFilePath}'");
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"Failed to save lyrics to local cache: {ex.Message}");
+                }
+            }
+            else if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.PlainLyrics))
+            {
+                LogDebug("Synced lyrics not found, plain lyrics available.");
+            }
+            else
+            {
+                LogDebug("No lyrics found.");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            LogDebug("Fetch cancelled (OperationCanceledException).");
+        }
+        catch (Exception ex)
+        {
+            LogDebug($"HandleTrackChangeAsync failed: {ex.Message}");
+        }
+    }
+
+    private static HashSet<string> GetSignificantWords(string input)
+    {
+        var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(input)) return words;
+
+        string cleaned = Regex.Replace(input, @"[^\w\s]", " ");
+        var rawWords = cleaned.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+        var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "with", "by", 
+            "feat", "ft", "version", "mix", "remix", "radio", "edit", "acoustic", "live", "original",
+            "sped", "up", "slowed", "down"
+        };
+
+        foreach (var w in rawWords)
+        {
+            if (w.Length > 1 && !stopWords.Contains(w))
+            {
+                words.Add(w);
+            }
+        }
+        return words;
+    }
+
+    private bool IsLooseMatch(string returnedTitle, string returnedArtist, string targetTitle, string targetArtist)
+    {
+        var targetTitleWords = GetSignificantWords(targetTitle);
+        var returnedTitleWords = GetSignificantWords(returnedTitle);
+
+        bool titleMatches = false;
+        foreach (var w in targetTitleWords)
+        {
+            if (returnedTitleWords.Contains(w))
+            {
+                titleMatches = true;
+                break;
+            }
+        }
+
+        if (targetTitleWords.Count == 0 || !titleMatches)
+        {
+            titleMatches = returnedTitle.Contains(targetTitle, StringComparison.OrdinalIgnoreCase) ||
+                           targetTitle.Contains(returnedTitle, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var targetArtistWords = GetSignificantWords(targetArtist);
+        var returnedArtistWords = GetSignificantWords(returnedArtist);
+
+        bool artistMatches = false;
+        foreach (var w in targetArtistWords)
+        {
+            if (returnedArtistWords.Contains(w))
+            {
+                artistMatches = true;
+                break;
+            }
+        }
+
+        if (targetArtistWords.Count == 0 || !artistMatches)
+        {
+            artistMatches = returnedArtist.Contains(targetArtist, StringComparison.OrdinalIgnoreCase) ||
+                            targetArtist.Contains(returnedArtist, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return titleMatches && artistMatches;
+    }
+
+    private bool IsLrcLibMatch(LrclibResponse result, string targetArtist, string targetTitle)
+    {
+        if (result == null) return false;
+        string trackName = result.TrackName ?? string.Empty;
+        string artistName = result.ArtistName ?? string.Empty;
+
+        bool match = IsLooseMatch(trackName, artistName, targetTitle, targetArtist);
+        LogDebug($"IsLrcLibMatch: Returned Title: '{trackName}', Artist: '{artistName}' vs Target Title: '{targetTitle}', Artist: '{targetArtist}' => MATCH={match}");
+        return match;
+    }
+
+    private async Task<LrclibResponse?> FetchLyricsAsync(string title, string artist, double duration, CancellationToken token)
+    {
+        // LRCLIB is the fallback open-source database.
+        // We query each endpoint with a separate 15-second timeout to handle high-latency connections robustly.
+        try
+        {
+            // 1. Try real-time get API first if duration is available
+            if (duration > 0)
+            {
+                using var getCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                getCts.CancelAfter(TimeSpan.FromSeconds(15));
+                
+                int durationSeconds = (int)Math.Round(duration);
+                string getUrl = $"https://lrclib.net/api/get?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}&duration={durationSeconds}";
+                LogDebug($"LRCLIB /api/get lookup URL: '{getUrl}'");
+                
+                try
+                {
+                    var getResponse = await HttpClient.GetAsync(getUrl, getCts.Token);
+                    if (getResponse.IsSuccessStatusCode)
+                    {
+                        var getRes = await getResponse.Content.ReadFromJsonAsync<LrclibResponse>(cancellationToken: getCts.Token);
+                        if (getRes != null && (!string.IsNullOrEmpty(getRes.SyncedLyrics) || !string.IsNullOrEmpty(getRes.PlainLyrics)))
+                        {
+                            LogDebug("LRCLIB /api/get lyrics retrieved successfully.");
+                            return getRes;
+                        }
+                    }
+                    else
+                    {
+                        LogDebug($"LRCLIB /api/get returned status code: {getResponse.StatusCode}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"LRCLIB /api/get failed: {ex.Message}");
+                }
+            }
+
+            if (token.IsCancellationRequested) return null;
+
+            // 2. Try get-cached (precise cache lookup)
+            {
+                using var cachedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                cachedCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+                string cachedUrl = $"https://lrclib.net/api/get-cached?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
+                LogDebug($"LRCLIB cached lookup URL: '{cachedUrl}'");
+                
+                try
+                {
+                    var response = await HttpClient.GetAsync(cachedUrl, cachedCts.Token);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var cachedRes = await response.Content.ReadFromJsonAsync<LrclibResponse>(cancellationToken: cachedCts.Token);
+                        if (cachedRes != null && (!string.IsNullOrEmpty(cachedRes.SyncedLyrics) || !string.IsNullOrEmpty(cachedRes.PlainLyrics)))
+                        {
+                            LogDebug("LRCLIB cached lyrics retrieved successfully.");
+                            return cachedRes;
+                        }
+                    }
+                    else
+                    {
+                        LogDebug($"LRCLIB cached API returned status code: {response.StatusCode}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"LRCLIB cached API failed: {ex.Message}");
+                }
+            }
+
+            if (token.IsCancellationRequested) return null;
+
+            // 3. Try precise search endpoint (exact metadata match)
+            {
+                using var searchCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                searchCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+                string searchUrl = $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
+                LogDebug($"LRCLIB precise search URL: '{searchUrl}'");
+                
+                try
+                {
+                    var searchResponse = await HttpClient.GetAsync(searchUrl, searchCts.Token);
+                    if (searchResponse.IsSuccessStatusCode)
+                    {
+                        var searchResults = await searchResponse.Content.ReadFromJsonAsync<List<LrclibResponse>>(cancellationToken: searchCts.Token);
+                        if (searchResults != null && searchResults.Count > 0)
+                        {
+                            LogDebug($"LRCLIB precise search returned {searchResults.Count} results.");
+                            foreach (var result in searchResults)
+                            {
+                                if (!string.IsNullOrEmpty(result.SyncedLyrics) && IsLrcLibMatch(result, artist, title))
+                                {
+                                    LogDebug("LRCLIB matched precise search result.");
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        LogDebug($"LRCLIB precise search returned status code: {searchResponse.StatusCode}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"LRCLIB precise search failed: {ex.Message}");
+                }
+            }
+
+            if (token.IsCancellationRequested) return null;
+
+            // 4. Fallback to cleaned metadata search
+            string cleanTitle = Regex.Replace(title, @"\s*[\(\[][^\)\]]*[\)\]]", "");
+            cleanTitle = Regex.Replace(cleanTitle, @"\s*-\s*.*?(?:radio|edit|remaster|remix|mix|acoustic|live|version|sped|slowed|instrumental).*", "", RegexOptions.IgnoreCase);
+            cleanTitle = Regex.Replace(cleanTitle, @"\s+(?:feat|ft)\.?\s+.*", "", RegexOptions.IgnoreCase);
+
+            string cleanArtist = Regex.Replace(artist, @"\s+(?:feat|ft)\.?\s+.*", "", RegexOptions.IgnoreCase);
+            int commaIndex = cleanArtist.IndexOfAny(new[] { ',', ';', '/' });
+            if (commaIndex > 0)
+            {
+                cleanArtist = cleanArtist.Substring(0, commaIndex).Trim();
+            }
+
+            cleanTitle = cleanTitle.Trim();
+            cleanArtist = cleanArtist.Trim();
+
+            if (cleanTitle != title || cleanArtist != artist)
+            {
+                using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                fallbackCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+                string fallbackUrl = $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(cleanTitle)}&artist_name={Uri.EscapeDataString(cleanArtist)}";
+                LogDebug($"LRCLIB clean fallback search URL: '{fallbackUrl}'");
+                
+                try
+                {
+                    var fallbackResponse = await HttpClient.GetAsync(fallbackUrl, fallbackCts.Token);
+                    if (fallbackResponse.IsSuccessStatusCode)
+                    {
+                        var fallbackResults = await fallbackResponse.Content.ReadFromJsonAsync<List<LrclibResponse>>(cancellationToken: fallbackCts.Token);
+                        if (fallbackResults != null && fallbackResults.Count > 0)
+                        {
+                            LogDebug($"LRCLIB fallback search returned {fallbackResults.Count} results.");
+                            foreach (var result in fallbackResults)
+                            {
+                                if (!string.IsNullOrEmpty(result.SyncedLyrics) && IsLrcLibMatch(result, artist, title))
+                                {
+                                    LogDebug("LRCLIB matched clean fallback search result.");
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        LogDebug($"LRCLIB fallback search returned status code: {fallbackResponse.StatusCode}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug($"LRCLIB fallback search failed: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogDebug($"LRCLIB lyric fetch outer error: {ex.Message}");
+        }
+
         return null;
     }
 
     public bool TryReadLyrics(out string lyrics)
     {
         lyrics = string.Empty;
-        if (_currentSession == null)
-        {
-            lyrics = "Spotify未就绪";
-            return false;
-        }
-
-        var playback = _currentSession.GetPlaybackInfo();
-        if (playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed ||
-            playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped)
-        {
-            lyrics = "播放已停止";
-            return false;
-        }
 
         if (_lyricLines == null || _lyricLines.Count == 0)
         {
@@ -275,23 +803,41 @@ public class SpotifyLyricsReader
             return false;
         }
 
-        var timeline = _currentSession.GetTimelineProperties();
-        if (timeline == null)
+        TimeSpan currentPosition = TimeSpan.Zero;
+        bool positionDetermined = false;
+
+        // Try using SMTC for progress if synced
+        if (_isSmtcSynced && _currentSession != null)
         {
-            lyrics = $"{_currentArtist} - {_currentTitle}";
-            return true;
+            try
+            {
+                var playback = _currentSession.GetPlaybackInfo();
+                var timeline = _currentSession.GetTimelineProperties();
+                if (timeline != null && playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                {
+                    var elapsed = DateTimeOffset.Now - timeline.LastUpdatedTime;
+                    if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+                    currentPosition = timeline.Position + elapsed;
+                    positionDetermined = true;
+                }
+                else if (timeline != null && playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused)
+                {
+                    currentPosition = timeline.Position;
+                    positionDetermined = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogDebug($"TryReadLyrics SMTC position error: {ex.Message}");
+            }
         }
 
-        TimeSpan currentPosition;
-        if (playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+        // Fallback to local timer if SMTC not synced or failed
+        if (!positionDetermined)
         {
-            var elapsed = DateTimeOffset.Now - timeline.LastUpdatedTime;
+            var elapsed = DateTimeOffset.Now - _songStartTime;
             if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-            currentPosition = timeline.Position + elapsed;
-        }
-        else
-        {
-            currentPosition = timeline.Position;
+            currentPosition = elapsed;
         }
 
         string currentText = string.Empty;
