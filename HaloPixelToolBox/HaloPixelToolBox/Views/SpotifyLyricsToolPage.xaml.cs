@@ -28,6 +28,8 @@ public sealed partial class SpotifyLyricsToolPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         Console.WriteLine("导航到Spotify歌词页面");
+        ViewModel.AutoNavigationParameterService.Initialize(this);
         ViewModel.AutoNavigationParameterService.OnParameterChange(e.Parameter);
+        ViewModel.OnNavigatedTo();
     }
 }

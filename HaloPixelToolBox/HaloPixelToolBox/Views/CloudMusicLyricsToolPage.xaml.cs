@@ -5,7 +5,7 @@ using XFEExtension.NetCore.WinUIHelper.Utilities.Helper;
 namespace HaloPixelToolBox.Views;
 
 /// <summary>
-/// ÍøÒ×ÔÆ¸è´Ê¹¤¾ßÒ³Ãæ
+/// ç½‘æ˜“äº‘æ­Œè¯å·¥å…·é¡µé¢
 /// </summary>
 public sealed partial class CloudMusicLyricsToolPage : Page
 {
@@ -13,7 +13,7 @@ public sealed partial class CloudMusicLyricsToolPage : Page
     public CloudMusicLyricsToolPageViewModel ViewModel { get; set; } = new();
     public CloudMusicLyricsToolPage()
     {
-        Console.WriteLine("ÍøÒ×ÔÆ¸è´Ê¹¤¾ßÒ³Ãæ³õÊ¼»¯ÖĞ...");
+        Console.WriteLine("ç½‘æ˜“äº‘æ­Œè¯å·¥å…·é¡µé¢åˆå§‹åŒ–ä¸­...");
         Current = this;
         InitializeComponent();
         ViewModel.AutoNavigationParameterService.Initialize(this);
@@ -22,12 +22,14 @@ public sealed partial class CloudMusicLyricsToolPage : Page
         ViewModel.SettingService.Initialize();
         ViewModel.SettingService.RegisterEvents();
         NavigationCacheMode = NavigationCacheMode.Enabled;
-        Console.WriteLine("ÍøÒ×ÔÆ¸è´Ê¹¤¾ßÒ³Ãæ³õÊ¼»¯Íê³É");
+        Console.WriteLine("ç½‘æ˜“äº‘æ­Œè¯å·¥å…·é¡µé¢åˆå§‹åŒ–å®Œæˆ");
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
-        Console.WriteLine("µ¼º½ÖÁÍøÒ×ÔÆ¸è´Ê¹¤¾ßÒ³Ãæ");
+        Console.WriteLine("å¯¼èˆªåˆ°ç½‘æ˜“äº‘æ­Œè¯é¡µé¢");
+        ViewModel.AutoNavigationParameterService.Initialize(this);
         ViewModel.AutoNavigationParameterService.OnParameterChange(e.Parameter);
+        ViewModel.OnNavigatedTo();
     }
 }

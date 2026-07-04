@@ -119,6 +119,48 @@ public class SpotifyLyricsReader
     private DateTimeOffset _songStartTime = DateTimeOffset.Now;
     private bool _isSmtcSynced = false;
 
+    public (byte R, byte G, byte B)? CurrentAlbumColor { get; private set; }
+
+    public static async Task<(byte R, byte G, byte B)?> GetDominantColorAsync(Windows.Storage.Streams.IRandomAccessStreamReference thumbnail)
+    {
+        try
+        {
+            using var stream = await thumbnail.OpenReadAsync();
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+            var transform = new Windows.Graphics.Imaging.BitmapTransform
+            {
+                ScaledWidth = 16,
+                ScaledHeight = 16,
+                InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Linear
+            };
+            var pixelData = await decoder.GetPixelDataAsync(
+                Windows.Graphics.Imaging.BitmapPixelFormat.Rgba8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                transform,
+                Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation,
+                Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb
+            );
+            byte[] pixels = pixelData.DetachPixelData();
+            long rSum = 0, gSum = 0, bSum = 0;
+            int pixelCount = pixels.Length / 4;
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                rSum += pixels[i];
+                gSum += pixels[i + 1];
+                bSum += pixels[i + 2];
+            }
+            if (pixelCount > 0)
+            {
+                return ((byte)(rSum / pixelCount), (byte)(gSum / pixelCount), (byte)(bSum / pixelCount));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] GetDominantColorAsync failed: {ex.Message}\n{ex.StackTrace}");
+        }
+        return null;
+    }
+
     public string CurrentTitle => _currentTitle;
     public string CurrentArtist => _currentArtist;
 
@@ -312,6 +354,24 @@ public class SpotifyLyricsReader
                     _currentDuration = timeline?.EndTime.TotalSeconds ?? 0;
                     _isSmtcSynced = true;
                     Console.WriteLine($"SMTC Sync Achieved for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+                    
+                    if (media.Thumbnail != null)
+                    {
+                        var color = await GetDominantColorAsync(media.Thumbnail);
+                        if (color.HasValue)
+                        {
+                            CurrentAlbumColor = color.Value;
+                            Console.WriteLine($"Extracted album dominant color: RGB({color.Value.R}, {color.Value.G}, {color.Value.B})");
+                        }
+                        else
+                        {
+                            Console.WriteLine("GetDominantColorAsync returned null for the thumbnail.");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("media.Thumbnail is null for this track.");
+                    }
                 }
                 else
                 {

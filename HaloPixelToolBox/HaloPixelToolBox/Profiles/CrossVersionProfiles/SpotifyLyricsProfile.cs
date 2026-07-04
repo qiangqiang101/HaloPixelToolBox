@@ -37,4 +37,16 @@ public partial class SpotifyLyricsProfile : XFEProfile
     /// </summary>
     [ProfileProperty]
     private HaloPixelUIModel defaultHaloPixelUIModel = HaloPixelUIModel.Clock;
+
+    /// <summary>
+    /// 是否开启屏幕颜色同步
+    /// </summary>
+    [ProfileProperty]
+    private bool enableScreenColorSync = false;
+
+    /// <summary>
+    /// 是否开启氛围灯颜色同步
+    /// </summary>
+    [ProfileProperty]
+    private bool enableAmbientColorSync = false;
 }

@@ -50,6 +50,12 @@
                 <controls:SettingsCard Header="启用歌词同步" Description="启用后，Spotify的歌词会实时显示在花再 Halo Pixel 音响上">
                     <ToggleSwitch IsOn="{x:Bind ViewModel.EnableSpotifyLyrics, Mode=TwoWay}"/>
                 </controls:SettingsCard>
+                <controls:SettingsCard Header="开启屏幕颜色同步" Description="自动提取当前歌曲专辑封面主色并应用到像素屏歌词文本颜色">
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.EnableScreenColorSync, Mode=TwoWay}"/>
+                </controls:SettingsCard>
+                <controls:SettingsCard Header="开启氛围灯颜色同步" Description="自动提取当前歌曲专辑封面主色并应用到音响氛围灯/底座灯颜色">
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.EnableAmbientColorSync, Mode=TwoWay}"/>
+                </controls:SettingsCard>
                 
                 <TextBlock Text="个性化" Style="{StaticResource SettingsSectionHeaderTextBlockStyle}"/>
                 <controls:SettingsExpander Header="暂停后切换回默认界面" Description="一段时间后自动切换回时钟界面等音响自带页面">
