@@ -1,4 +1,4 @@
-﻿using HaloPixelToolBox.Interface.Services;
+using HaloPixelToolBox.Interface.Services;
 using HaloPixelToolBox.Profiles.CrossVersionProfiles;
 using HaloPixelToolBox.Utilities;
 using Microsoft.UI.Dispatching;
@@ -43,6 +43,7 @@ public partial class App : Application
         AppThemeHelper.Theme = SystemProfile.Theme;
         PageManager.RegisterPage(typeof(AppShellPage));
         PageManager.RegisterPage(typeof(CloudMusicLyricsToolPage));
+        PageManager.RegisterPage(typeof(SpotifyLyricsToolPage));
         PageManager.RegisterPage(typeof(MainPage));
         PageManager.RegisterPage(typeof(SettingPage));
         UnhandledException += App_UnhandledException;
