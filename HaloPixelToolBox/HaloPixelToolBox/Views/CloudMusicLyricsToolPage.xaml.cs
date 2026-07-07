@@ -1,5 +1,8 @@
 using HaloPixelToolBox.Core.Models;
+using HaloPixelToolBox.Core.Models.Lighting;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
+using System;
 using XFEExtension.NetCore.WinUIHelper.Utilities.Helper;
 
 namespace HaloPixelToolBox.Views;
@@ -18,11 +21,45 @@ public sealed partial class CloudMusicLyricsToolPage : Page
         InitializeComponent();
         ViewModel.AutoNavigationParameterService.Initialize(this);
         ViewModel.SettingService.AddComboBox(defaultHaloPixelTextLayoutComboBox, ProfileHelper.GetEnumProfileSaveFunc<HaloPixelTextLayout>(), ProfileHelper.GetEnumProfileLoadFuncForComboBox());
-        ViewModel.SettingService.AddComboBox(defaultHaloPixelUIModelComboBox, ProfileHelper.GetEnumProfileSaveFunc<HaloPixelUIModel>(), ProfileHelper.GetEnumProfileLoadFuncForComboBox());
+        ViewModel.SettingService.AddComboBox(syncAmbientLightEffectComboBox, ProfileHelper.GetEnumProfileSaveFunc<AmbientLightEffect>(), ProfileHelper.GetEnumProfileLoadFuncForComboBox());
         ViewModel.SettingService.Initialize();
         ViewModel.SettingService.RegisterEvents();
+
+        // Propagate ComboBox selection changes to ViewModel properties
+        syncAmbientLightEffectComboBox.SelectionChanged += (s, e) =>
+        {
+            if (syncAmbientLightEffectComboBox.SelectedItem is ComboBoxItem item && Enum.TryParse<AmbientLightEffect>(item.Tag?.ToString(), out var effect))
+            {
+                ViewModel.SyncAmbientLightEffect = effect;
+            }
+        };
+
+        // Initialize brightness radio buttons
+        switch (ViewModel.SyncAmbientLightBrightness)
+        {
+            case AmbientLightBrightness.Low:
+                brightnessLowRadio.IsChecked = true;
+                break;
+            case AmbientLightBrightness.Medium:
+                brightnessMediumRadio.IsChecked = true;
+                break;
+            case AmbientLightBrightness.High:
+                brightnessHighRadio.IsChecked = true;
+                break;
+        }
+
         NavigationCacheMode = NavigationCacheMode.Enabled;
         Console.WriteLine("网易云歌词工具页面初始化完成");
+    }
+
+    private void OnBrightnessRadioChecked(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (ReferenceEquals(sender, brightnessLowRadio))
+            ViewModel.SyncAmbientLightBrightness = AmbientLightBrightness.Low;
+        else if (ReferenceEquals(sender, brightnessMediumRadio))
+            ViewModel.SyncAmbientLightBrightness = AmbientLightBrightness.Medium;
+        else if (ReferenceEquals(sender, brightnessHighRadio))
+            ViewModel.SyncAmbientLightBrightness = AmbientLightBrightness.High;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)

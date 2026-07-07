@@ -118,8 +118,26 @@ public class SpotifyLyricsReader
 
     private DateTimeOffset _songStartTime = DateTimeOffset.Now;
     private bool _isSmtcSynced = false;
+    private string _lastColorTitle = string.Empty;
 
     public (byte R, byte G, byte B)? CurrentAlbumColor { get; private set; }
+
+    public bool IsPlaying
+    {
+        get
+        {
+            if (_currentSession != null)
+            {
+                try
+                {
+                    var playback = _currentSession.GetPlaybackInfo();
+                    return playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                }
+                catch { }
+            }
+            return false;
+        }
+    }
 
     public static async Task<(byte R, byte G, byte B)?> GetDominantColorAsync(Windows.Storage.Streams.IRandomAccessStreamReference thumbnail)
     {
@@ -355,23 +373,27 @@ public class SpotifyLyricsReader
                     _isSmtcSynced = true;
                     Console.WriteLine($"SMTC Sync Achieved for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
                     
-                    if (media.Thumbnail != null)
-                    {
-                        var color = await GetDominantColorAsync(media.Thumbnail);
-                        if (color.HasValue)
-                        {
-                            CurrentAlbumColor = color.Value;
-                            Console.WriteLine($"Extracted album dominant color: RGB({color.Value.R}, {color.Value.G}, {color.Value.B})");
-                        }
-                        else
-                        {
-                            Console.WriteLine("GetDominantColorAsync returned null for the thumbnail.");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("media.Thumbnail is null for this track.");
-                    }
+                     if (media.Thumbnail != null)
+                     {
+                         if (_lastColorTitle != media.Title)
+                         {
+                             _lastColorTitle = media.Title;
+                             var color = await GetDominantColorAsync(media.Thumbnail);
+                             if (color.HasValue)
+                             {
+                                 CurrentAlbumColor = color.Value;
+                                 Console.WriteLine($"Extracted album dominant color: RGB({color.Value.R}, {color.Value.G}, {color.Value.B})");
+                             }
+                             else
+                             {
+                                 Console.WriteLine("GetDominantColorAsync returned null for the thumbnail.");
+                             }
+                         }
+                     }
+                     else
+                     {
+                         Console.WriteLine("media.Thumbnail is null for this track.");
+                     }
                 }
                 else
                 {

@@ -62,6 +62,11 @@
                     <PersonPicture ProfilePicture="{x:Bind ViewModel.UserTile}" Height="25" Width="25" HorizontalAlignment="Center"/>
                     <TextBlock Text="{x:Bind ViewModel.UserName, Mode=OneWay}" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="8,0,0,0"/>
                 </StackPanel>
+                <NavigationViewItem Content="默认界面" add:NavigationAddition.NavigateTo="HaloPixelToolBox.Views.DefaultSettingsPage">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE7F4;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="设置" add:NavigationAddition.NavigateTo="HaloPixelToolBox.Views.SettingPage">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE713;"/>

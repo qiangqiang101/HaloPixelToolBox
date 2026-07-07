@@ -46,6 +46,7 @@ public partial class App : Application
         PageManager.RegisterPage(typeof(SpotifyLyricsToolPage));
         PageManager.RegisterPage(typeof(MainPage));
         PageManager.RegisterPage(typeof(SettingPage));
+        PageManager.RegisterPage(typeof(DefaultSettingsPage));
         UnhandledException += App_UnhandledException;
         AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
