@@ -85,7 +85,6 @@ public class LrclibResponse
 
 public class SpotifyLyricsReader
 {
-    private static readonly string LogPath = @"C:\Users\WePro\.gemini\antigravity-cli\spotify_debug.log";
     private static HttpClient? _httpClient;
     private static readonly object HttpLock = new object();
 
@@ -119,19 +118,69 @@ public class SpotifyLyricsReader
 
     private DateTimeOffset _songStartTime = DateTimeOffset.Now;
     private bool _isSmtcSynced = false;
+    private string _lastColorTitle = string.Empty;
 
-    public string CurrentTitle => _currentTitle;
-    public string CurrentArtist => _currentArtist;
+    public (byte R, byte G, byte B)? CurrentAlbumColor { get; private set; }
 
-    static SpotifyLyricsReader()
+    public bool IsPlaying
+    {
+        get
+        {
+            if (_currentSession != null)
+            {
+                try
+                {
+                    var playback = _currentSession.GetPlaybackInfo();
+                    return playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                }
+                catch { }
+            }
+            return false;
+        }
+    }
+
+    public static async Task<(byte R, byte G, byte B)?> GetDominantColorAsync(Windows.Storage.Streams.IRandomAccessStreamReference thumbnail)
     {
         try
         {
-            if (File.Exists(LogPath)) File.Delete(LogPath);
-            File.WriteAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] Log initialized.\n");
+            using var stream = await thumbnail.OpenReadAsync();
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+            var transform = new Windows.Graphics.Imaging.BitmapTransform
+            {
+                ScaledWidth = 16,
+                ScaledHeight = 16,
+                InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Linear
+            };
+            var pixelData = await decoder.GetPixelDataAsync(
+                Windows.Graphics.Imaging.BitmapPixelFormat.Rgba8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                transform,
+                Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation,
+                Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb
+            );
+            byte[] pixels = pixelData.DetachPixelData();
+            long rSum = 0, gSum = 0, bSum = 0;
+            int pixelCount = pixels.Length / 4;
+            for (int i = 0; i < pixels.Length; i += 4)
+            {
+                rSum += pixels[i];
+                gSum += pixels[i + 1];
+                bSum += pixels[i + 2];
+            }
+            if (pixelCount > 0)
+            {
+                return ((byte)(rSum / pixelCount), (byte)(gSum / pixelCount), (byte)(bSum / pixelCount));
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] GetDominantColorAsync failed: {ex.Message}\n{ex.StackTrace}");
+        }
+        return null;
     }
+
+    public string CurrentTitle => _currentTitle;
+    public string CurrentArtist => _currentArtist;
 
     private static HttpClient CreateHttpClient()
     {
@@ -166,11 +215,11 @@ public class SpotifyLyricsReader
         
         if (proxyConfigured)
         {
-            LogDebug("Auto-configured HttpClient to use local proxy for accelerated connection.");
+            Console.WriteLine("Auto-configured HttpClient to use local proxy for accelerated connection.");
         }
         else
         {
-            LogDebug("No local proxy detected, using direct system default connection.");
+            Console.WriteLine("No local proxy detected, using direct system default connection.");
         }
 
         return client;
@@ -191,15 +240,6 @@ public class SpotifyLyricsReader
         return false;
     }
 
-    private static void LogDebug(string message)
-    {
-        try
-        {
-            File.AppendAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}\n");
-        }
-        catch { }
-    }
-
     private static async Task<T?> RunWithTimeout<T>(Windows.Foundation.IAsyncOperation<T> asyncOp, int timeoutMs)
     {
         using var cts = new CancellationTokenSource();
@@ -215,19 +255,19 @@ public class SpotifyLyricsReader
             else
             {
                 cts.Cancel(); // Cancel the WinRT operation
-                LogDebug("WinRT async operation timed out.");
+                Console.WriteLine("WinRT async operation timed out.");
             }
         }
         catch (Exception ex)
         {
-            LogDebug($"RunWithTimeout failed: {ex.Message}");
+            Console.WriteLine($"RunWithTimeout failed: {ex.Message}");
         }
         return default;
     }
 
     public bool Initialize()
     {
-        LogDebug($"Initialize called. isInitialized={_isInitialized}");
+        Console.WriteLine($"Initialize called. isInitialized={_isInitialized}");
         if (_isInitialized)
         {
             UpdateCurrentSession();
@@ -249,14 +289,14 @@ public class SpotifyLyricsReader
         }
         catch (Exception ex)
         {
-            LogDebug($"SpotifyLyricsReader Initialize failed: {ex.Message}");
+            Console.WriteLine($"SpotifyLyricsReader Initialize failed: {ex.Message}");
             return false;
         }
     }
 
     private void OnSessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args)
     {
-        LogDebug("OnSessionsChanged event fired.");
+        Console.WriteLine("OnSessionsChanged event fired.");
         UpdateCurrentSession();
     }
 
@@ -277,7 +317,7 @@ public class SpotifyLyricsReader
 
         if (spotifySession != _currentSession)
         {
-            LogDebug($"Active session changed. Old: {_currentSession?.SourceAppUserModelId ?? "null"}, New: {spotifySession?.SourceAppUserModelId ?? "null"}");
+            Console.WriteLine($"Active session changed. Old: {_currentSession?.SourceAppUserModelId ?? "null"}, New: {spotifySession?.SourceAppUserModelId ?? "null"}");
             if (_currentSession != null)
             {
                 _currentSession.MediaPropertiesChanged -= OnMediaPropertiesChanged;
@@ -299,19 +339,19 @@ public class SpotifyLyricsReader
 
     private void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
     {
-        LogDebug("OnMediaPropertiesChanged event fired.");
+        Console.WriteLine("OnMediaPropertiesChanged event fired.");
         _ = SyncWithSmtcAsync();
     }
 
     private void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
     {
-        LogDebug("OnPlaybackInfoChanged event fired.");
+        Console.WriteLine("OnPlaybackInfoChanged event fired.");
         _ = SyncWithSmtcAsync();
     }
 
     private void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
     {
-        LogDebug("OnTimelinePropertiesChanged event fired.");
+        Console.WriteLine("OnTimelinePropertiesChanged event fired.");
         _ = SyncWithSmtcAsync();
     }
 
@@ -331,23 +371,45 @@ public class SpotifyLyricsReader
                     var timeline = _currentSession.GetTimelineProperties();
                     _currentDuration = timeline?.EndTime.TotalSeconds ?? 0;
                     _isSmtcSynced = true;
-                    LogDebug($"SMTC Sync Achieved for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+                    Console.WriteLine($"SMTC Sync Achieved for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+                    
+                     if (media.Thumbnail != null)
+                     {
+                         if (_lastColorTitle != media.Title)
+                         {
+                             _lastColorTitle = media.Title;
+                             var color = await GetDominantColorAsync(media.Thumbnail);
+                             if (color.HasValue)
+                             {
+                                 CurrentAlbumColor = color.Value;
+                                 Console.WriteLine($"Extracted album dominant color: RGB({color.Value.R}, {color.Value.G}, {color.Value.B})");
+                             }
+                             else
+                             {
+                                 Console.WriteLine("GetDominantColorAsync returned null for the thumbnail.");
+                             }
+                         }
+                     }
+                     else
+                     {
+                         Console.WriteLine("media.Thumbnail is null for this track.");
+                     }
                 }
                 else
                 {
-                    LogDebug($"SMTC song mismatch. SMTC Title: {media.Title}, Current Title: {_currentTitle}");
+                    Console.WriteLine($"SMTC song mismatch. SMTC Title: {media.Title}, Current Title: {_currentTitle}");
                 }
             }
         }
         catch (Exception ex)
         {
-            LogDebug($"SyncWithSmtcAsync failed: {ex.Message}");
+            Console.WriteLine($"SyncWithSmtcAsync failed: {ex.Message}");
         }
     }
 
     private void StartWindowTitlePolling()
     {
-        LogDebug("Starting window title polling loop.");
+        Console.WriteLine("Starting window title polling loop.");
         Task.Run(async () =>
         {
             while (true)
@@ -360,7 +422,7 @@ public class SpotifyLyricsReader
                     {
                         if (trackInfo.Artist != _currentArtist || trackInfo.Title != _currentTitle)
                         {
-                            LogDebug($"Track change detected via polling: {trackInfo.Artist} - {trackInfo.Title}");
+                            Console.WriteLine($"Track change detected via polling: {trackInfo.Artist} - {trackInfo.Title}");
                             _ = HandleTrackChangeAsync(trackInfo.Artist, trackInfo.Title);
                         }
                     }
@@ -368,7 +430,7 @@ public class SpotifyLyricsReader
                     {
                         if (!string.IsNullOrEmpty(_currentTitle))
                         {
-                            LogDebug("No active track detected, clearing lyrics.");
+                            Console.WriteLine("No active track detected, clearing lyrics.");
                             _currentTitle = string.Empty;
                             _currentArtist = string.Empty;
                             _lyricLines.Clear();
@@ -377,7 +439,7 @@ public class SpotifyLyricsReader
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"Track polling loop error: {ex.Message}");
+                    Console.WriteLine($"Track polling loop error: {ex.Message}");
                 }
                 await Task.Delay(250);
             }
@@ -445,7 +507,7 @@ public class SpotifyLyricsReader
 
     private async Task HandleTrackChangeAsync(string artist, string track)
     {
-        LogDebug($"HandleTrackChangeAsync started. Target: {artist} - {track}");
+        Console.WriteLine($"HandleTrackChangeAsync started. Target: {artist} - {track}");
         _cts?.Cancel();
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
@@ -462,7 +524,7 @@ public class SpotifyLyricsReader
             // Await SMTC synchronization to get the duration before requesting lyrics
             await SyncWithSmtcAsync();
 
-            LogDebug($"Fetching lyrics for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
+            Console.WriteLine($"Fetching lyrics for: {_currentArtist} - {_currentTitle} (Duration: {_currentDuration}s)");
 
             // 1. Check local cache first
             string lyricsCacheDir = Path.Combine(AppPathHelper.AppCache, "Lyrics");
@@ -480,13 +542,13 @@ public class SpotifyLyricsReader
                     if (!string.IsNullOrEmpty(cachedLrc))
                     {
                         _lyricLines = LrcParser.Parse(cachedLrc);
-                        LogDebug($"Loaded lyrics from local cache file: '{cacheFilePath}'");
+                        Console.WriteLine($"Loaded lyrics from local cache file: '{cacheFilePath}'");
                         return;
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"Failed to read cached lyrics file: {ex.Message}");
+                    Console.WriteLine($"Failed to read cached lyrics file: {ex.Message}");
                 }
             }
 
@@ -495,42 +557,42 @@ public class SpotifyLyricsReader
 
             if (token.IsCancellationRequested)
             {
-                LogDebug($"Lyrics fetch cancelled for: {artist} - {track}");
+                Console.WriteLine($"Lyrics fetch cancelled for: {artist} - {track}");
                 return;
             }
 
             if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.SyncedLyrics))
             {
                 _lyricLines = LrcParser.Parse(lyricsRes.SyncedLyrics);
-                LogDebug($"Loaded {_lyricLines.Count} synced lines from LRCLIB.");
+                Console.WriteLine($"Loaded {_lyricLines.Count} synced lines from LRCLIB.");
 
                 // Save to local cache asynchronously
                 try
                 {
                     await File.WriteAllTextAsync(cacheFilePath, lyricsRes.SyncedLyrics, token);
-                    LogDebug($"Saved fetched lyrics to local cache: '{cacheFilePath}'");
+                    Console.WriteLine($"Saved fetched lyrics to local cache: '{cacheFilePath}'");
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"Failed to save lyrics to local cache: {ex.Message}");
+                    Console.WriteLine($"Failed to save lyrics to local cache: {ex.Message}");
                 }
             }
             else if (lyricsRes != null && !string.IsNullOrEmpty(lyricsRes.PlainLyrics))
             {
-                LogDebug("Synced lyrics not found, plain lyrics available.");
+                Console.WriteLine("Synced lyrics not found, plain lyrics available.");
             }
             else
             {
-                LogDebug("No lyrics found.");
+                Console.WriteLine("No lyrics found.");
             }
         }
         catch (OperationCanceledException)
         {
-            LogDebug("Fetch cancelled (OperationCanceledException).");
+            Console.WriteLine("Fetch cancelled (OperationCanceledException).");
         }
         catch (Exception ex)
         {
-            LogDebug($"HandleTrackChangeAsync failed: {ex.Message}");
+            Console.WriteLine($"HandleTrackChangeAsync failed: {ex.Message}");
         }
     }
 
@@ -609,7 +671,7 @@ public class SpotifyLyricsReader
         string artistName = result.ArtistName ?? string.Empty;
 
         bool match = IsLooseMatch(trackName, artistName, targetTitle, targetArtist);
-        LogDebug($"IsLrcLibMatch: Returned Title: '{trackName}', Artist: '{artistName}' vs Target Title: '{targetTitle}', Artist: '{targetArtist}' => MATCH={match}");
+        Console.WriteLine($"IsLrcLibMatch: Returned Title: '{trackName}', Artist: '{artistName}' vs Target Title: '{targetTitle}', Artist: '{targetArtist}' => MATCH={match}");
         return match;
     }
 
@@ -627,7 +689,7 @@ public class SpotifyLyricsReader
                 
                 int durationSeconds = (int)Math.Round(duration);
                 string getUrl = $"https://lrclib.net/api/get?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}&duration={durationSeconds}";
-                LogDebug($"LRCLIB /api/get lookup URL: '{getUrl}'");
+                Console.WriteLine($"LRCLIB /api/get lookup URL: '{getUrl}'");
                 
                 try
                 {
@@ -637,18 +699,18 @@ public class SpotifyLyricsReader
                         var getRes = await getResponse.Content.ReadFromJsonAsync<LrclibResponse>(cancellationToken: getCts.Token);
                         if (getRes != null && (!string.IsNullOrEmpty(getRes.SyncedLyrics) || !string.IsNullOrEmpty(getRes.PlainLyrics)))
                         {
-                            LogDebug("LRCLIB /api/get lyrics retrieved successfully.");
+                            Console.WriteLine("LRCLIB /api/get lyrics retrieved successfully.");
                             return getRes;
                         }
                     }
                     else
                     {
-                        LogDebug($"LRCLIB /api/get returned status code: {getResponse.StatusCode}");
+                        Console.WriteLine($"LRCLIB /api/get returned status code: {getResponse.StatusCode}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"LRCLIB /api/get failed: {ex.Message}");
+                    Console.WriteLine($"LRCLIB /api/get failed: {ex.Message}");
                 }
             }
 
@@ -660,7 +722,7 @@ public class SpotifyLyricsReader
                 cachedCts.CancelAfter(TimeSpan.FromSeconds(15));
 
                 string cachedUrl = $"https://lrclib.net/api/get-cached?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
-                LogDebug($"LRCLIB cached lookup URL: '{cachedUrl}'");
+                Console.WriteLine($"LRCLIB cached lookup URL: '{cachedUrl}'");
                 
                 try
                 {
@@ -670,18 +732,18 @@ public class SpotifyLyricsReader
                         var cachedRes = await response.Content.ReadFromJsonAsync<LrclibResponse>(cancellationToken: cachedCts.Token);
                         if (cachedRes != null && (!string.IsNullOrEmpty(cachedRes.SyncedLyrics) || !string.IsNullOrEmpty(cachedRes.PlainLyrics)))
                         {
-                            LogDebug("LRCLIB cached lyrics retrieved successfully.");
+                            Console.WriteLine("LRCLIB cached lyrics retrieved successfully.");
                             return cachedRes;
                         }
                     }
                     else
                     {
-                        LogDebug($"LRCLIB cached API returned status code: {response.StatusCode}");
+                        Console.WriteLine($"LRCLIB cached API returned status code: {response.StatusCode}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"LRCLIB cached API failed: {ex.Message}");
+                    Console.WriteLine($"LRCLIB cached API failed: {ex.Message}");
                 }
             }
 
@@ -693,7 +755,7 @@ public class SpotifyLyricsReader
                 searchCts.CancelAfter(TimeSpan.FromSeconds(15));
 
                 string searchUrl = $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
-                LogDebug($"LRCLIB precise search URL: '{searchUrl}'");
+                Console.WriteLine($"LRCLIB precise search URL: '{searchUrl}'");
                 
                 try
                 {
@@ -703,12 +765,12 @@ public class SpotifyLyricsReader
                         var searchResults = await searchResponse.Content.ReadFromJsonAsync<List<LrclibResponse>>(cancellationToken: searchCts.Token);
                         if (searchResults != null && searchResults.Count > 0)
                         {
-                            LogDebug($"LRCLIB precise search returned {searchResults.Count} results.");
+                            Console.WriteLine($"LRCLIB precise search returned {searchResults.Count} results.");
                             foreach (var result in searchResults)
                             {
                                 if (!string.IsNullOrEmpty(result.SyncedLyrics) && IsLrcLibMatch(result, artist, title))
                                 {
-                                    LogDebug("LRCLIB matched precise search result.");
+                                    Console.WriteLine("LRCLIB matched precise search result.");
                                     return result;
                                 }
                             }
@@ -716,12 +778,12 @@ public class SpotifyLyricsReader
                     }
                     else
                     {
-                        LogDebug($"LRCLIB precise search returned status code: {searchResponse.StatusCode}");
+                        Console.WriteLine($"LRCLIB precise search returned status code: {searchResponse.StatusCode}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"LRCLIB precise search failed: {ex.Message}");
+                    Console.WriteLine($"LRCLIB precise search failed: {ex.Message}");
                 }
             }
 
@@ -748,7 +810,7 @@ public class SpotifyLyricsReader
                 fallbackCts.CancelAfter(TimeSpan.FromSeconds(15));
 
                 string fallbackUrl = $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(cleanTitle)}&artist_name={Uri.EscapeDataString(cleanArtist)}";
-                LogDebug($"LRCLIB clean fallback search URL: '{fallbackUrl}'");
+                Console.WriteLine($"LRCLIB clean fallback search URL: '{fallbackUrl}'");
                 
                 try
                 {
@@ -758,12 +820,12 @@ public class SpotifyLyricsReader
                         var fallbackResults = await fallbackResponse.Content.ReadFromJsonAsync<List<LrclibResponse>>(cancellationToken: fallbackCts.Token);
                         if (fallbackResults != null && fallbackResults.Count > 0)
                         {
-                            LogDebug($"LRCLIB fallback search returned {fallbackResults.Count} results.");
+                            Console.WriteLine($"LRCLIB fallback search returned {fallbackResults.Count} results.");
                             foreach (var result in fallbackResults)
                             {
                                 if (!string.IsNullOrEmpty(result.SyncedLyrics) && IsLrcLibMatch(result, artist, title))
                                 {
-                                    LogDebug("LRCLIB matched clean fallback search result.");
+                                    Console.WriteLine("LRCLIB matched clean fallback search result.");
                                     return result;
                                 }
                             }
@@ -771,18 +833,18 @@ public class SpotifyLyricsReader
                     }
                     else
                     {
-                        LogDebug($"LRCLIB fallback search returned status code: {fallbackResponse.StatusCode}");
+                        Console.WriteLine($"LRCLIB fallback search returned status code: {fallbackResponse.StatusCode}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogDebug($"LRCLIB fallback search failed: {ex.Message}");
+                    Console.WriteLine($"LRCLIB fallback search failed: {ex.Message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            LogDebug($"LRCLIB lyric fetch outer error: {ex.Message}");
+            Console.WriteLine($"LRCLIB lyric fetch outer error: {ex.Message}");
         }
 
         return null;
@@ -828,7 +890,7 @@ public class SpotifyLyricsReader
             }
             catch (Exception ex)
             {
-                LogDebug($"TryReadLyrics SMTC position error: {ex.Message}");
+                Console.WriteLine($"TryReadLyrics SMTC position error: {ex.Message}");
             }
         }
 

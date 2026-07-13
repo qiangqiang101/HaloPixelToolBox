@@ -50,29 +50,31 @@
                 <controls:SettingsCard Header="启用歌词同步" Description="启用后，Spotify的歌词会实时显示在花再 Halo Pixel 音响上">
                     <ToggleSwitch IsOn="{x:Bind ViewModel.EnableSpotifyLyrics, Mode=TwoWay}"/>
                 </controls:SettingsCard>
-                
-                <TextBlock Text="个性化" Style="{StaticResource SettingsSectionHeaderTextBlockStyle}"/>
-                <controls:SettingsExpander Header="暂停后切换回默认界面" Description="一段时间后自动切换回时钟界面等音响自带页面">
-                    <ToggleSwitch x:Name="switchBackWhenPauseToggleSwitch" IsOn="{x:Bind ViewModel.SwitchBackWhenPause, Mode=TwoWay}"/>
+                <controls:SettingsCard Header="开启屏幕颜色同步" Description="自动提取当前歌曲专辑封面主色并应用到像素屏歌词文本颜色">
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.EnableScreenColorSync, Mode=TwoWay}"/>
+                </controls:SettingsCard>
+                <controls:SettingsExpander Header="开启氛围灯颜色同步" Description="自动提取当前歌曲专辑封面主色并应用到音响氛围灯/底座灯颜色">
+                    <ToggleSwitch x:Name="enableAmbientColorSyncToggleSwitch" IsOn="{x:Bind ViewModel.EnableAmbientColorSync, Mode=TwoWay}"/>
                     <controls:SettingsExpander.Items>
-                        <controls:SettingsCard Header="暂停延迟" Description="设置多长时间后，音响切换回默认界面" IsEnabled="{x:Bind switchBackWhenPauseToggleSwitch.IsOn, Mode=OneWay}">
-                            <NumberBox SpinButtonPlacementMode="Compact" Value="{x:Bind ViewModel.SwitchBackTimeout, Mode=TwoWay}"/>
-                        </controls:SettingsCard>
-                        <controls:SettingsCard Header="暂停界面" Description="设置暂停后切换回的默认界面" IsEnabled="{x:Bind switchBackWhenPauseToggleSwitch.IsOn, Mode=OneWay}">
-                            <ComboBox x:Name="defaultHaloPixelUIModelComboBox" Tag="HaloPixelToolBox.Profiles.CrossVersionProfiles.SpotifyLyricsProfile.DefaultHaloPixelUIModel">
-                                <ComboBoxItem Content="时钟类" Tag="Clock"/>
-                                <ComboBoxItem Content="游戏类" Tag="Game"/>
-                                <ComboBoxItem Content="打工类" Tag="Work"/>
-                                <ComboBoxItem Content="读书类" Tag="Read"/>
-                                <ComboBoxItem Content="猫咪类" Tag="Cats"/>
-                                <ComboBoxItem Content="狗狗类" Tag="Dogs"/>
-                                <ComboBoxItem Content="热更类" Tag="Memes"/>
-                                <ComboBoxItem Content="赛博类" Tag="Cyber"/>
-                                <ComboBoxItem Content="频谱类" Tag="Waves"/>
+                        <controls:SettingsCard Header="氛围灯同步效果" Description="设置专辑颜色同步时的灯光效果模式" IsEnabled="{x:Bind enableAmbientColorSyncToggleSwitch.IsOn, Mode=OneWay}">
+                            <ComboBox x:Name="syncAmbientLightEffectComboBox" Tag="HaloPixelToolBox.Profiles.CrossVersionProfiles.SpotifyLyricsProfile.SyncAmbientLightEffect">
+                                <ComboBoxItem Content="常亮" Tag="Static"/>
+                                <ComboBoxItem Content="呼吸" Tag="Breathing"/>
                             </ComboBox>
+                        </controls:SettingsCard>
+                        <controls:SettingsCard Header="氛围灯同步亮度" Description="设置专辑颜色同步时的灯光亮度模式" IsEnabled="{x:Bind enableAmbientColorSyncToggleSwitch.IsOn, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="15">
+                                <RadioButton x:Name="brightnessLowRadio" Content="低" GroupName="BrightnessSyncGroup" Checked="OnBrightnessRadioChecked"/>
+                                <RadioButton x:Name="brightnessMediumRadio" Content="中" GroupName="BrightnessSyncGroup" Checked="OnBrightnessRadioChecked"/>
+                                <RadioButton x:Name="brightnessHighRadio" Content="高" GroupName="BrightnessSyncGroup" Checked="OnBrightnessRadioChecked"/>
+                            </StackPanel>
+                        </controls:SettingsCard>
+                        <controls:SettingsCard Header="氛围灯同步速度" Description="设置呼吸或动态灯效的变化速度 (1-10)" IsEnabled="{x:Bind enableAmbientColorSyncToggleSwitch.IsOn, Mode=OneWay}">
+                            <Slider Minimum="1" Maximum="10" StepFrequency="1" Width="150" Value="{x:Bind ViewModel.SyncAmbientLightSpeed, Mode=TwoWay}"/>
                         </controls:SettingsCard>
                     </controls:SettingsExpander.Items>
                 </controls:SettingsExpander>
+                
                 <controls:SettingsCard Header="歌词位置" Description="设置歌词的默认显示位置">
                     <ComboBox x:Name="defaultHaloPixelTextLayoutComboBox" Tag="HaloPixelToolBox.Profiles.CrossVersionProfiles.SpotifyLyricsProfile.DefaultHaloPixelTextLayout">
                         <ComboBoxItem Content="左对齐" Tag="Left"/>
